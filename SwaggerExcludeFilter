@@ -1,0 +1,93 @@
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Linq;
+using System.Reflection;
+using System.Web.Http.Description;
+using Swashbuckle.Swagger;
+
+namespace Web
+{
+    public class SwaggerExcludeFilter : IOperationFilter
+    {
+        public void Apply(Operation operation, SchemaRegistry schemaRegistry, ApiDescription apiDescription)
+        {
+            var model = apiDescription.GetControllerAndActionAttributes<ReturnShortModelAttribute>().ToArray();
+            if (!model.Any())
+            {
+                return;
+            }
+
+            object props;
+            var models = model.First().Models;
+            var responseType = apiDescription.ResponseDescription.DeclaredType;
+            var isNeedShortSerialize = models.Contains(responseType) || (responseType.IsGenericType && models.Contains(responseType.GetGenericArguments()[0]));
+            var description = $"OK (uses a short model of {string.Join(", ", models.Select(m => m.Name))})";
+            if (responseType.GetInterface(nameof(IEnumerable)) != null)
+            {
+                props = new List<Dictionary<string, object>>
+                {
+                    {
+                        responseType
+                            .GetGenericArguments()[0]
+                            .GetProperties()
+                            .Where(p => !isNeedShortSerialize || p.GetCustomAttributes(typeof(ShortModelMemberAttribute), false).Any())
+                            .ToDictionary(p => p.Name, ExpandPropertyType)
+                    },
+                };
+            }
+            else if (responseType.IsGenericType && responseType.GetGenericTypeDefinition() == typeof(AssignedAvailableDTO<>))
+            {
+                props = responseType
+                    .GetProperties()
+                    .ToDictionary(p => p.Name, ExpandPropertyType);
+            }
+            else
+            {
+                props = responseType
+                    .GetProperties()
+                    .Where(p => !isNeedShortSerialize || p.GetCustomAttributes(typeof(ShortModelMemberAttribute), false).Any())
+                    .ToDictionary(p => p.Name, ExpandPropertyType);
+            }
+
+            operation.responses.Clear();
+            operation.responses.Add("200", new Response
+            {
+                description = description,
+                schema = new Schema
+                {
+                    example = props,
+                },
+            });
+        }
+
+        private static object ExpandPropertyType(PropertyInfo prop)
+        {
+            if (!prop.PropertyType.IsGenericType ||
+                !prop.PropertyType.GetGenericArguments()[0].Namespace.StartsWith("name", StringComparison.InvariantCultureIgnoreCase))
+            {
+                return prop.PropertyType.GetFriendlyName();
+            }
+
+            if (prop.PropertyType.GetInterface(nameof(IEnumerable)) != null)
+            {
+                return new List<Dictionary<string, object>>
+                {
+                    prop
+                        .PropertyType
+                        .GetGenericArguments()[0]
+                        .GetProperties()
+                        .Where(p => p.GetCustomAttributes(typeof(ShortModelMemberAttribute)).Any())
+                        .ToDictionary(p => p.Name, ExpandPropertyType),
+                };
+            }
+
+            return prop
+                .PropertyType
+                .GetGenericArguments()[0]
+                .GetProperties()
+                .Where(p => p.GetCustomAttributes(typeof(ShortModelMemberAttribute)).Any())
+                .ToDictionary(p => p.Name, ExpandPropertyType);
+        }
+    }
+}
